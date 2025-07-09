@@ -1,7 +1,7 @@
 /*
  * @Author: nijineko
  * @Date: 2023-09-30 22:03:17
- * @LastEditTime: 2025-07-10 02:26:02
+ * @LastEditTime: 2025-07-10 06:32:34
  * @LastEditors: Mario0051
  * @Description: main.go
  * @FilePath: \GF2AssetBundleDecryption\main.go
@@ -30,22 +30,36 @@ type CombinedTextEntry struct {
 	Translated string
 }
 
-func (c *CombinedTextEntry) UnmarshalJSON(data []byte) error {
-	var tmp [3]json.RawMessage
-	if err := json.Unmarshal(data, &tmp); err != nil {
-		return fmt.Errorf("CombinedTextEntry must be a json array of 3 elements, %w", err)
+type CombinedTextEntrySlice []CombinedTextEntry
+
+func (s *CombinedTextEntrySlice) UnmarshalJSON(data []byte) error {
+	var rawMessages []json.RawMessage
+	if err := json.Unmarshal(data, &rawMessages); err != nil {
+		return fmt.Errorf("failed to unmarshal top-level array: %w", err)
 	}
 
-	if err := json.Unmarshal(tmp[0], &c.Id); err != nil {
-		return err
-	}
-	if err := json.Unmarshal(tmp[1], &c.Original); err != nil {
-		return err
-	}
-	if err := json.Unmarshal(tmp[2], &c.Translated); err != nil {
-		return err
-	}
+	*s = make(CombinedTextEntrySlice, 0, len(rawMessages))
+	for _, raw := range rawMessages {
+		var threeElem [3]json.RawMessage
+		if err := json.Unmarshal(raw, &threeElem); err == nil {
+			var original, translated string
+			if json.Unmarshal(threeElem[1], &original) == nil && json.Unmarshal(threeElem[2], &translated) == nil {
+				var ids []int64
+				if err := json.Unmarshal(threeElem[0], &ids); err == nil {
+					for _, id := range ids {
+						*s = append(*s, CombinedTextEntry{Id: id, Original: original, Translated: translated})
+					}
+					continue
+				}
 
+				var id int64
+				if err := json.Unmarshal(threeElem[0], &id); err == nil {
+					*s = append(*s, CombinedTextEntry{Id: id, Original: original, Translated: translated})
+					continue
+				}
+			}
+		}
+	}
 	return nil
 }
 
@@ -58,24 +72,85 @@ func formatEntriesToJSON(data []CombinedTextEntry) ([]byte, error) {
 	buffer.WriteString("[\n")
 
 	for i, entry := range data {
-		idBytes, _ := json.Marshal(entry.Id)
-		origBytes, _ := json.Marshal(entry.Original)
-		transBytes, _ := json.Marshal(entry.Translated)
+		entryArray := []interface{}{entry.Id, entry.Original, entry.Translated}
+		itemBytes, err := json.Marshal(entryArray)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal entry %d: %w", i, err)
+		}
 
-		buffer.WriteString("\t[")
-		buffer.Write(idBytes)
-		buffer.WriteString(",")
-		buffer.Write(origBytes)
-		buffer.WriteString(",")
-		buffer.Write(transBytes)
-		buffer.WriteString("]")
+		buffer.WriteString("\t")
+		buffer.Write(itemBytes)
 
 		if i < len(data)-1 {
 			buffer.WriteString(",")
 		}
+
 		buffer.WriteString("\n")
 	}
 
+	buffer.WriteString("]")
+	return buffer.Bytes(), nil
+}
+
+func formatMixedArrayJSON(data []CombinedTextEntry) ([]byte, error) {
+	if len(data) == 0 {
+		return []byte("[]"), nil
+	}
+
+	type groupKey struct {
+		Original   string
+		Translated string
+	}
+	groups := make(map[groupKey][]int64)
+	for _, entry := range data {
+		if entry.Id != -1 && entry.Translated != "" {
+			key := groupKey{Original: entry.Original, Translated: entry.Translated}
+			groups[key] = append(groups[key], entry.Id)
+		}
+	}
+
+	var resultData []interface{}
+	handledIDs := make(map[int64]bool)
+
+	for _, entry := range data {
+		if entry.Id != -1 && handledIDs[entry.Id] {
+			continue
+		}
+
+		key := groupKey{Original: entry.Original, Translated: entry.Translated}
+		idsInGroup, isGrouped := groups[key]
+
+		if entry.Id != -1 && isGrouped && len(idsInGroup) > 1 {
+			sort.Slice(idsInGroup, func(i, j int) bool { return idsInGroup[i] < idsInGroup[j] })
+			resultData = append(resultData, []interface{}{idsInGroup, entry.Original, entry.Translated})
+			for _, id := range idsInGroup {
+				handledIDs[id] = true
+			}
+		} else {
+			resultData = append(resultData, []interface{}{entry.Id, entry.Original, entry.Translated})
+			if entry.Id != -1 {
+				handledIDs[entry.Id] = true
+			}
+		}
+	}
+
+	var buffer bytes.Buffer
+	buffer.WriteString("[\n")
+	for i, item := range resultData {
+		itemBytes, err := json.Marshal(item)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal entry %d: %w", i, err)
+		}
+
+		buffer.WriteString("\t")
+		buffer.Write(itemBytes)
+
+		if i < len(resultData)-1 {
+			buffer.WriteString(",")
+		}
+
+		buffer.WriteString("\n")
+	}
 	buffer.WriteString("]")
 	return buffer.Bytes(), nil
 }
@@ -112,6 +187,10 @@ func parseLangFileToStruct(filePath string) (*Proto.TextMapTable, error) {
 	}
 
 	return textMapTable, nil
+}
+
+type KVPair struct {
+	Key, Value string
 }
 
 func main() {
@@ -227,7 +306,6 @@ func main() {
 		}
 
 		translatedTextMap := make(map[int64]string)
-
 		if *TranslatedPath != "" {
 			fmt.Printf("正在解析翻译文件: %s\n", *TranslatedPath)
 			translatedTable, err := parseLangFileToStruct(*TranslatedPath)
@@ -248,25 +326,21 @@ func main() {
 			if !ok {
 				translatedContent = ""
 			}
-
-			combinedEntry := CombinedTextEntry{
+			combinedData = append(combinedData, CombinedTextEntry{
 				Id:         baseEntry.Id,
 				Original:   baseEntry.Content,
 				Translated: translatedContent,
-			}
-			combinedData = append(combinedData, combinedEntry)
+			})
 		}
 
 		finalJsonData, err := formatEntriesToJSON(combinedData)
 		if err != nil {
-			panic(fmt.Errorf("合并数据JSON序列化失败: %w", err))
+			panic(fmt.Errorf("序列化JSON失败: %w", err))
 		}
 
-		err = os.WriteFile(*OutputPath, finalJsonData, 0644)
-		if err != nil {
+		if err = os.WriteFile(*OutputPath, finalJsonData, 0644); err != nil {
 			panic(fmt.Errorf("写入合并后的JSON文件失败: %w", err))
 		}
-
 		fmt.Printf("合并成功！共处理 %d 条数据，文件已保存至: %s\n", len(combinedData), *OutputPath)
 		os.Exit(0)
 	case "to-original-tool":
@@ -277,7 +351,7 @@ func main() {
 			panic(fmt.Errorf("读取合并JSON文件失败: %w", err))
 		}
 
-		var combinedData []CombinedTextEntry
+		var combinedData CombinedTextEntrySlice
 		if err := json.Unmarshal(combinedDataBytes, &combinedData); err != nil {
 			panic(fmt.Errorf("解析合并JSON文件失败: %w", err))
 		}
@@ -286,6 +360,9 @@ func main() {
 		translatedOutput := OriginalToolOutput{}
 
 		for _, entry := range combinedData {
+			if entry.Id == -1 {
+				continue
+			}
 			originalOutput.Data = append(originalOutput.Data, OriginalToolEntry{Id: entry.Id, Content: entry.Original})
 			translatedOutput.Data = append(translatedOutput.Data, OriginalToolEntry{Id: entry.Id, Content: entry.Translated})
 		}
@@ -308,34 +385,55 @@ func main() {
 
 		os.Exit(0)
 	case "to-keyvalue-tool":
-		fmt.Println("开始转换: 合并JSON -> 键值对格式...")
+		fmt.Println("开始转换: 混合JSON -> 有序键值对...")
 
 		combinedDataBytes, err := os.ReadFile(*InputCombinedPath)
 		if err != nil {
 			panic(fmt.Errorf("读取合并JSON文件失败: %w", err))
 		}
 
-		var combinedData []CombinedTextEntry
+		var combinedData CombinedTextEntrySlice
 		if err := json.Unmarshal(combinedDataBytes, &combinedData); err != nil {
-			panic(fmt.Errorf("解析合并JSON文件失败: %w", err))
+			panic(fmt.Errorf("解析混合JSON文件失败: %w", err))
 		}
 
-		keyValueMap := make(map[string]string, len(combinedData))
+		var orderedPairs []KVPair
+		handledOriginals := make(map[string]bool)
+
 		for _, entry := range combinedData {
-			if entry.Original != "" {
-				keyValueMap[entry.Original] = entry.Translated
+			if entry.Original == "" {
+				continue
+			}
+
+			if !handledOriginals[entry.Original] {
+				orderedPairs = append(orderedPairs, KVPair{Key: entry.Original, Value: entry.Translated})
+				handledOriginals[entry.Original] = true
 			}
 		}
 
-		keyValueJson, err := json.MarshalIndent(keyValueMap, "", "    ")
-		if err != nil {
-			panic(fmt.Errorf("序列化键值对JSON失败: %w", err))
-		}
+		var buffer bytes.Buffer
+		buffer.WriteString("{\n")
+		for i, pair := range orderedPairs {
+			keyBytes, _ := json.Marshal(pair.Key)
+			valueBytes, _ := json.Marshal(pair.Value)
 
-		if err := os.WriteFile(*OutputPath, keyValueJson, 0644); err != nil {
-			panic(fmt.Errorf("写入键值对JSON失败: %w", err))
+			buffer.WriteString("\t")
+			buffer.Write(keyBytes)
+			buffer.WriteString(": ")
+			buffer.Write(valueBytes)
+
+			if i < len(orderedPairs)-1 {
+				buffer.WriteString(",")
+			}
+			buffer.WriteString("\n")
 		}
-		fmt.Printf("成功生成键值对格式文件: %s\n", *OutputPath)
+		buffer.WriteString("}")
+		finalJson := buffer.Bytes()
+
+		if err := os.WriteFile(*OutputPath, finalJson, 0644); err != nil {
+			panic(fmt.Errorf("写入有序键值对JSON失败: %w", err))
+		}
+		fmt.Printf("成功生成有序键值对文件: %s\n", *OutputPath)
 		os.Exit(0)
 	case "merge-json":
 		fmt.Println("开始执行合并JSON文件模式 (按ID排序结构匹配)...")
@@ -349,53 +447,62 @@ func main() {
 			panic(fmt.Errorf("读取覆盖JSON文件失败 (%s): %w", *OverrideJsonPath, err))
 		}
 
-		var baseData []CombinedTextEntry
+		var baseData CombinedTextEntrySlice
 		if err := json.Unmarshal(baseBytes, &baseData); err != nil {
 			panic(fmt.Errorf("解析基础JSON文件失败: %w", err))
 		}
-		var overrideData []CombinedTextEntry
+		var overrideData CombinedTextEntrySlice
 		if err := json.Unmarshal(overrideBytes, &overrideData); err != nil {
 			panic(fmt.Errorf("解析覆盖JSON文件失败: %w", err))
 		}
 
+		baseEntries := []CombinedTextEntry(baseData)
+		overrideEntries := []CombinedTextEntry(overrideData)
+
 		baseGroups := make(map[string][]*CombinedTextEntry)
-		for i := range baseData {
-			entry := &baseData[i]
+		for i := range baseEntries {
+			if baseEntries[i].Id == -1 {
+				continue
+			}
+			entry := &baseEntries[i]
 			baseGroups[entry.Original] = append(baseGroups[entry.Original], entry)
 		}
 
 		overrideGroups := make(map[string][]*CombinedTextEntry)
-		for i := range overrideData {
-			entry := &overrideData[i]
+		for i := range overrideEntries {
+			if overrideEntries[i].Id == -1 {
+				continue
+			}
+			entry := &overrideEntries[i]
 			overrideGroups[entry.Original] = append(overrideGroups[entry.Original], entry)
 		}
 
-		for originalText, baseEntries := range baseGroups {
-			overrideEntries, ok := overrideGroups[originalText]
+		for originalText, baseGroupEntries := range baseGroups {
+			overrideGroupEntries, ok := overrideGroups[originalText]
 			if !ok {
 				continue
 			}
 
-			sort.Slice(baseEntries, func(i, j int) bool {
-				return baseEntries[i].Id < baseEntries[j].Id
+			sort.Slice(baseGroupEntries, func(i, j int) bool {
+				return baseGroupEntries[i].Id < baseGroupEntries[j].Id
 			})
-			sort.Slice(overrideEntries, func(i, j int) bool {
-				return overrideEntries[i].Id < overrideEntries[j].Id
+			sort.Slice(overrideGroupEntries, func(i, j int) bool {
+				return overrideGroupEntries[i].Id < overrideGroupEntries[j].Id
 			})
 
-			minLen := len(baseEntries)
-			if len(overrideEntries) < minLen {
-				minLen = len(overrideEntries)
+			minLen := len(baseGroupEntries)
+			if len(overrideGroupEntries) < minLen {
+				minLen = len(overrideGroupEntries)
 			}
 
 			for i := 0; i < minLen; i++ {
-				if overrideEntries[i].Translated != "" {
-					baseEntries[i].Translated = overrideEntries[i].Translated
+				if overrideGroupEntries[i].Translated != "" {
+					baseGroupEntries[i].Translated = overrideGroupEntries[i].Translated
 				}
 			}
 		}
 
-		resultJson, err := formatEntriesToJSON(baseData)
+		resultJson, err := formatMixedArrayJSON(baseEntries)
 		if err != nil {
 			panic(fmt.Errorf("序列化最终JSON失败: %w", err))
 		}
