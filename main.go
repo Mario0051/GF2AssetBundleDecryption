@@ -1,7 +1,7 @@
 /*
  * @Author: nijineko
  * @Date: 2023-09-30 22:03:17
- * @LastEditTime: 2025-07-09 01:55:28
+ * @LastEditTime: 2025-07-10 02:26:02
  * @LastEditors: Mario0051
  * @Description: main.go
  * @FilePath: \GF2AssetBundleDecryption\main.go
@@ -16,8 +16,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"sort"
+	"strings"
 
 	"github.com/nijinekoyo/GF2AssetBundleDecryption/Decryption"
 	"github.com/nijinekoyo/GF2AssetBundleDecryption/Decryption/Proto"
@@ -25,9 +25,59 @@ import (
 )
 
 type CombinedTextEntry struct {
-	Id         int64  `json:"Id"`
-	Original   string `json:"Original"`
-	Translated string `json:"Translated"`
+	Id         int64
+	Original   string
+	Translated string
+}
+
+func (c *CombinedTextEntry) UnmarshalJSON(data []byte) error {
+	var tmp [3]json.RawMessage
+	if err := json.Unmarshal(data, &tmp); err != nil {
+		return fmt.Errorf("CombinedTextEntry must be a json array of 3 elements, %w", err)
+	}
+
+	if err := json.Unmarshal(tmp[0], &c.Id); err != nil {
+		return err
+	}
+	if err := json.Unmarshal(tmp[1], &c.Original); err != nil {
+		return err
+	}
+	if err := json.Unmarshal(tmp[2], &c.Translated); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func formatEntriesToJSON(data []CombinedTextEntry) ([]byte, error) {
+	if len(data) == 0 {
+		return []byte("[]"), nil
+	}
+
+	var buffer bytes.Buffer
+	buffer.WriteString("[\n")
+
+	for i, entry := range data {
+		idBytes, _ := json.Marshal(entry.Id)
+		origBytes, _ := json.Marshal(entry.Original)
+		transBytes, _ := json.Marshal(entry.Translated)
+
+		buffer.WriteString("\t[")
+		buffer.Write(idBytes)
+		buffer.WriteString(",")
+		buffer.Write(origBytes)
+		buffer.WriteString(",")
+		buffer.Write(transBytes)
+		buffer.WriteString("]")
+
+		if i < len(data)-1 {
+			buffer.WriteString(",")
+		}
+		buffer.WriteString("\n")
+	}
+
+	buffer.WriteString("]")
+	return buffer.Bytes(), nil
 }
 
 type OriginalToolEntry struct {
@@ -51,7 +101,7 @@ func parseLangFileToStruct(filePath string) (*Proto.TextMapTable, error) {
 	var skip uint32
 	err = binary.Read(bytes.NewReader(fileData[:4]), binary.LittleEndian, &skip)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read header from %s: %w", filePath, err)
+		return nil, fmt.Errorf("failed to read header from %s: %w", err)
 	}
 
 	protoData := fileData[skip+4:]
@@ -202,12 +252,12 @@ func main() {
 			combinedEntry := CombinedTextEntry{
 				Id:         baseEntry.Id,
 				Original:   baseEntry.Content,
-				Translated: translatedContent, // This will be empty if no translation was found
+				Translated: translatedContent,
 			}
 			combinedData = append(combinedData, combinedEntry)
 		}
 
-		finalJsonData, err := json.MarshalIndent(combinedData, "", "    ")
+		finalJsonData, err := formatEntriesToJSON(combinedData)
 		if err != nil {
 			panic(fmt.Errorf("合并数据JSON序列化失败: %w", err))
 		}
@@ -285,7 +335,6 @@ func main() {
 		if err := os.WriteFile(*OutputPath, keyValueJson, 0644); err != nil {
 			panic(fmt.Errorf("写入键值对JSON失败: %w", err))
 		}
-
 		fmt.Printf("成功生成键值对格式文件: %s\n", *OutputPath)
 		os.Exit(0)
 	case "merge-json":
@@ -346,7 +395,7 @@ func main() {
 			}
 		}
 
-		resultJson, err := json.MarshalIndent(baseData, "", "    ")
+		resultJson, err := formatEntriesToJSON(baseData)
 		if err != nil {
 			panic(fmt.Errorf("序列化最终JSON失败: %w", err))
 		}
