@@ -1,7 +1,7 @@
 /*
  * @Author: nijineko
  * @Date: 2023-09-30 22:03:17
- * @LastEditTime: 2025-07-10 13:27:17
+ * @LastEditTime: 2025-07-10 13:52:17
  * @LastEditors: Mario0051
  * @Description: main.go
  * @FilePath: \GF2AssetBundleDecryption\main.go
@@ -173,17 +173,14 @@ func formatRegularJSON(squashed bool, data []CombinedTextEntry) ([]byte, error) 
 	buffer.WriteString("[\n")
 
 	for i, item := range entriesToMarshal {
-		// Marshal the inner array to a single line
-		lineBytes, err := json.Marshal(item)
+		lineBytes, err := marshalNoEscapeHTML(item)
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal regular JSON entry %d: %w", i, err)
 		}
 
-		// Add indentation
 		buffer.WriteString("\t")
 		buffer.Write(lineBytes)
 
-		// Add a comma if it's not the last item
 		if i < len(entriesToMarshal)-1 {
 			buffer.WriteString(",")
 		}
@@ -262,7 +259,7 @@ func formatDictionaryJSON(squashed bool, data []CombinedTextEntry) ([]byte, erro
 		var lineBuffer bytes.Buffer
 
 		if !printedInDictSection[originalText] {
-			origBytes, _ := json.Marshal(originalText)
+			origBytes, _ := marshalNoEscapeHTML(originalText)
 			lineBuffer.Write(origBytes)
 			printedInDictSection[originalText] = true
 			lineHasContent = true
@@ -273,7 +270,7 @@ func formatDictionaryJSON(squashed bool, data []CombinedTextEntry) ([]byte, erro
 				if lineHasContent {
 					lineBuffer.WriteString(",")
 				}
-				transBytes, _ := json.Marshal(translatedText)
+				transBytes, _ := marshalNoEscapeHTML(translatedText)
 				lineBuffer.Write(transBytes)
 				printedInDictSection[translatedText] = true
 				lineHasContent = true
@@ -305,7 +302,7 @@ func formatDictionaryJSON(squashed bool, data []CombinedTextEntry) ([]byte, erro
 			} else {
 				buffer.WriteString("\t\t")
 			}
-			itemBytes, err := json.Marshal(item)
+			itemBytes, err := marshalNoEscapeHTML(item)
 			if err != nil {
 				return nil, fmt.Errorf("failed to marshal squashed data entry: %w", err)
 			}
@@ -314,7 +311,7 @@ func formatDictionaryJSON(squashed bool, data []CombinedTextEntry) ([]byte, erro
 		}
 	} else {
 		for i, item := range keylessData {
-			itemBytes, err := json.Marshal(item)
+			itemBytes, err := marshalNoEscapeHTML(item)
 			if err != nil {
 				return nil, fmt.Errorf("failed to marshal data entry %d: %w", i, err)
 			}
@@ -338,7 +335,6 @@ func formatCSV(squashed bool, data []CombinedTextEntry) ([]byte, error) {
 	var buffer bytes.Buffer
 	writer := csv.NewWriter(&buffer)
 
-	// Write header
 	if err := writer.Write([]string{"ID(s)", "Original", "Translated"}); err != nil {
 		return nil, err
 	}
@@ -375,6 +371,27 @@ func formatCSV(squashed bool, data []CombinedTextEntry) ([]byte, error) {
 
 	writer.Flush()
 	return buffer.Bytes(), writer.Error()
+}
+
+func marshalNoEscapeHTML(data interface{}) ([]byte, error) {
+	var buf bytes.Buffer
+	encoder := json.NewEncoder(&buf)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(data); err != nil {
+		return nil, err
+	}
+	return bytes.TrimSpace(buf.Bytes()), nil
+}
+
+func marshalIndentNoEscapeHTML(data interface{}, prefix, indent string) ([]byte, error) {
+	var buf bytes.Buffer
+	encoder := json.NewEncoder(&buf)
+	encoder.SetEscapeHTML(false)
+	encoder.SetIndent(prefix, indent)
+	if err := encoder.Encode(data); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
 }
 
 type OriginalToolEntry struct {
@@ -567,8 +584,8 @@ func main() {
 			originalOutput.Data = append(originalOutput.Data, OriginalToolEntry{Id: entry.Id, Content: entry.Original})
 			translatedOutput.Data = append(translatedOutput.Data, OriginalToolEntry{Id: entry.Id, Content: entry.Translated})
 		}
-		originalJson, _ := json.MarshalIndent(originalOutput, "", "    ")
-		translatedJson, _ := json.MarshalIndent(translatedOutput, "", "    ")
+		originalJson, _ := marshalIndentNoEscapeHTML(originalOutput, "", "    ")
+		translatedJson, _ := marshalIndentNoEscapeHTML(translatedOutput, "", "    ")
 		originalOutputPath := strings.Replace(*OutputPath, ".json", "_original.json", 1)
 		translatedOutputPath := strings.Replace(*OutputPath, ".json", "_translated.json", 1)
 		if err := os.WriteFile(originalOutputPath, originalJson, 0644); err != nil {
@@ -600,9 +617,9 @@ func main() {
 		var buffer bytes.Buffer
 		buffer.WriteString("{\n")
 		for i, pair := range orderedPairs {
-			keyBytes, _ := json.Marshal(pair.Key)
-			valueBytes, _ := json.Marshal(pair.Value)
-			buffer.WriteString("\t")
+			keyBytes, _ := marshalNoEscapeHTML(pair.Key)
+			valueBytes, _ := marshalNoEscapeHTML(pair.Value)
+			buffer.WriteString("    ")
 			buffer.Write(keyBytes)
 			buffer.WriteString(": ")
 			buffer.Write(valueBytes)
