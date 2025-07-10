@@ -1,7 +1,7 @@
 /*
  * @Author: nijineko
  * @Date: 2023-09-30 22:03:17
- * @LastEditTime: 2025-07-10 13:17:23
+ * @LastEditTime: 2025-07-10 13:27:17
  * @LastEditors: Mario0051
  * @Description: main.go
  * @FilePath: \GF2AssetBundleDecryption\main.go
@@ -628,44 +628,52 @@ func main() {
 		if err != nil {
 			panic(fmt.Errorf("读取基础文件失败 (%s): %w", *BaseJsonPath, err))
 		}
-		overrideEntries, err := readCombinedFile(*OverrideJsonPath)
-		if err != nil {
-			panic(fmt.Errorf("读取覆盖文件失败 (%s): %w", *OverrideJsonPath, err))
-		}
-		baseGroups := make(map[string][]*CombinedTextEntry)
-		for i := range baseEntries {
-			entry := &baseEntries[i]
-			if entry.Id == -1 {
-				continue
+
+		if *OverrideJsonPath == "" {
+			fmt.Printf("No override file specified. Converting/standardizing base file '%s'...\n", *BaseJsonPath)
+		} else {
+			fmt.Printf("开始执行合并 %s 和 %s...\n", *BaseJsonPath, *OverrideJsonPath)
+			overrideEntries, err := readCombinedFile(*OverrideJsonPath)
+			if err != nil {
+				panic(fmt.Errorf("读取覆盖文件失败 (%s): %w", *OverrideJsonPath, err))
 			}
-			baseGroups[entry.Original] = append(baseGroups[entry.Original], entry)
-		}
-		overrideGroups := make(map[string][]*CombinedTextEntry)
-		for i := range overrideEntries {
-			entry := &overrideEntries[i]
-			if entry.Id == -1 {
-				continue
+
+			baseGroups := make(map[string][]*CombinedTextEntry)
+			for i := range baseEntries {
+				entry := &baseEntries[i]
+				if entry.Id == -1 {
+					continue
+				}
+				baseGroups[entry.Original] = append(baseGroups[entry.Original], entry)
 			}
-			overrideGroups[entry.Original] = append(overrideGroups[entry.Original], entry)
-		}
-		for originalText, baseGroupEntries := range baseGroups {
-			overrideGroupEntries, ok := overrideGroups[originalText]
-			if !ok {
-				continue
+			overrideGroups := make(map[string][]*CombinedTextEntry)
+			for i := range overrideEntries {
+				entry := &overrideEntries[i]
+				if entry.Id == -1 {
+					continue
+				}
+				overrideGroups[entry.Original] = append(overrideGroups[entry.Original], entry)
 			}
-			sort.Slice(baseGroupEntries, func(i, j int) bool {
-				return baseGroupEntries[i].Id < baseGroupEntries[j].Id
-			})
-			sort.Slice(overrideGroupEntries, func(i, j int) bool {
-				return overrideGroupEntries[i].Id < overrideGroupEntries[j].Id
-			})
-			minLen := len(baseGroupEntries)
-			if len(overrideGroupEntries) < minLen {
-				minLen = len(overrideGroupEntries)
-			}
-			for i := 0; i < minLen; i++ {
-				if overrideGroupEntries[i].Translated != "" {
-					baseGroupEntries[i].Translated = overrideGroupEntries[i].Translated
+
+			for originalText, baseGroupEntries := range baseGroups {
+				overrideGroupEntries, ok := overrideGroups[originalText]
+				if !ok {
+					continue
+				}
+				sort.Slice(baseGroupEntries, func(i, j int) bool {
+					return baseGroupEntries[i].Id < baseGroupEntries[j].Id
+				})
+				sort.Slice(overrideGroupEntries, func(i, j int) bool {
+					return overrideGroupEntries[i].Id < overrideGroupEntries[j].Id
+				})
+				minLen := len(baseGroupEntries)
+				if len(overrideGroupEntries) < minLen {
+					minLen = len(overrideGroupEntries)
+				}
+				for i := 0; i < minLen; i++ {
+					if overrideGroupEntries[i].Translated != "" {
+						baseGroupEntries[i].Translated = overrideGroupEntries[i].Translated
+					}
 				}
 			}
 		}
@@ -684,7 +692,7 @@ func main() {
 		if err := os.WriteFile(outputFile, resultBytes, 0644); err != nil {
 			panic(fmt.Errorf("写入输出文件失败: %w", err))
 		}
-		fmt.Printf("结构化合并成功！文件已保存至: %s\n", outputFile)
+		fmt.Printf("操作成功！文件已保存至: %s\n", outputFile)
 		os.Exit(0)
 	default:
 		fmt.Println("未知的模式。请使用 -model ab, story, combine, to-original-tool, to-keyvalue-tool, merge-json, merge-csv")
