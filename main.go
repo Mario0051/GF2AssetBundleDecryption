@@ -424,7 +424,7 @@ func main() {
 	InputPath := flag.String("input", "./combined_story.json", "输入的合并后JSON文件路径")
 	OutputPath := flag.String("output", "./output.json", "输出文件路径")
 	BaseJsonPath := flag.String("base", "base.json", "基础JSON文件 (将被更新)")
-	OverrideJsonPath := flag.String("override", "override.json", "包含新翻译的覆盖JSON文件")
+	OverrideJsonPath := flag.String("override", "", "包含新翻译的覆盖JSON文件")
 	flag.Parse()
 
 	switch *Model {
